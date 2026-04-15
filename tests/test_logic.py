@@ -20,6 +20,50 @@ from logic import (
 
 
 class LogicTests(unittest.TestCase):
+    def test_resolve_stable_active_video_title_keeps_previous_title_when_dom_drifts(self):
+        snapshot = main.PlayerSnapshot(
+            exists=True,
+            current_time=12.0,
+            duration=230.0,
+            paused=False,
+            src='blob:https://example.com/video-2',
+            title='3.退役士兵安置报到',
+        )
+
+        title, src = main.resolve_stable_active_video(
+            snapshot,
+            pending_title=None,
+            pending_started_at=0.0,
+            now=120.0,
+            previous_title='2.退役士兵安置地规定',
+            previous_src='blob:https://example.com/video-2',
+        )
+
+        self.assertEqual(title, '2.退役士兵安置地规定')
+        self.assertEqual(src, 'blob:https://example.com/video-2')
+
+    def test_resolve_stable_active_video_title_changes_when_src_changes(self):
+        snapshot = main.PlayerSnapshot(
+            exists=True,
+            current_time=1.0,
+            duration=210.0,
+            paused=False,
+            src='blob:https://example.com/video-3',
+            title='3.退役士兵安置报到',
+        )
+
+        title, src = main.resolve_stable_active_video(
+            snapshot,
+            pending_title=None,
+            pending_started_at=0.0,
+            now=120.0,
+            previous_title='2.退役士兵安置地规定',
+            previous_src='blob:https://example.com/video-2',
+        )
+
+        self.assertEqual(title, '3.退役士兵安置报到')
+        self.assertEqual(src, 'blob:https://example.com/video-3')
+
     def test_resolve_active_video_title_prefers_pending_title_during_switch_window(self):
         snapshot = main.PlayerSnapshot(
             exists=True,

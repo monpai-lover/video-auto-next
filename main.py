@@ -441,6 +441,47 @@ def resolve_active_video_title(
     return normalize_text(snapshot.title or '')
 
 
+def resolve_stable_active_video(
+    snapshot: PlayerSnapshot,
+    *,
+    pending_title: str | None,
+    pending_started_at: float,
+    now: float,
+    previous_title: str | None,
+    previous_src: str | None,
+    switch_window_seconds: float = 8.0,
+    early_playback_seconds: float = 5.0,
+) -> tuple[str, str]:
+    candidate_title = resolve_active_video_title(
+        snapshot,
+        pending_title=pending_title,
+        pending_started_at=pending_started_at,
+        now=now,
+        switch_window_seconds=switch_window_seconds,
+        early_playback_seconds=early_playback_seconds,
+    )
+    current_src = normalize_text(snapshot.src or '')
+    last_title = normalize_text(previous_title or '')
+    last_src = normalize_text(previous_src or '')
+    pending_normalized = normalize_text(pending_title or '')
+    within_switch_window = bool(
+        pending_normalized and now - pending_started_at <= switch_window_seconds
+    )
+
+    if current_src:
+        if current_src == last_src and last_title:
+            if candidate_title and candidate_title != last_title and candidate_title != pending_normalized:
+                return last_title, current_src
+            if not candidate_title:
+                return last_title, current_src
+        return candidate_title or last_title, current_src
+
+    if last_title and not within_switch_window and snapshot.current_time > early_playback_seconds:
+        return last_title, last_src
+
+    return candidate_title or last_title, current_src or last_src
+
+
 def should_skip_by_watched_duration(
     snapshot: PlayerSnapshot,
     rows: list[dict[str, str]],
@@ -758,6 +799,8 @@ def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None
     pending_started_at = 0.0
     ensure_video_started(page)
     last_key = None
+    active_title = ''
+    active_src = ''
     started_at = time.monotonic()
     last_fix_at = 0.0
     idle_rounds = 0
@@ -770,12 +813,15 @@ def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None
 
         if snapshot.exists:
             current_time = time.monotonic()
-            active_title = resolve_active_video_title(
+            active_title, active_src = resolve_stable_active_video(
                 snapshot,
                 pending_title=pending_title,
                 pending_started_at=pending_started_at,
                 now=current_time,
+                previous_title=active_title,
+                previous_src=active_src,
             )
+            stable_key = f'{active_src}::{active_title}' if active_src else (active_title or 'unknown')
 
             if pending_title and active_title == normalize_text(pending_title):
                 if normalize_text(snapshot.title) == normalize_text(pending_title) or snapshot.current_time > 5:
@@ -785,8 +831,8 @@ def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None
                 pending_title = None
                 pending_started_at = 0.0
 
-            if snapshot.key != last_key:
-                last_key = snapshot.key
+            if stable_key != last_key:
+                last_key = stable_key
                 started_at = current_time
                 print(f'[info] 当前视频: {active_title or "<unknown>"}')
                 if should_skip_by_watched_duration(snapshot, rows, target_title=active_title):
