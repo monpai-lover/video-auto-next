@@ -20,6 +20,46 @@ from logic import (
 
 
 class LogicTests(unittest.TestCase):
+    def test_resolve_active_video_title_prefers_pending_title_during_switch_window(self):
+        snapshot = main.PlayerSnapshot(
+            exists=True,
+            current_time=1.5,
+            duration=230.0,
+            paused=False,
+            title='2.退役士兵安置地规定',
+        )
+
+        title = main.resolve_active_video_title(
+            snapshot,
+            pending_title='7.自主就业退役士兵一次性退役金发放',
+            pending_started_at=100.0,
+            now=103.0,
+        )
+
+        self.assertEqual(title, '7.自主就业退役士兵一次性退役金发放')
+
+    def test_should_skip_by_watched_duration_uses_override_title(self):
+        rows = [
+            {'title': '2.退役士兵安置地规定', 'status': '开始观看', 'raw': '2.退役士兵安置地规定 所看时长: 03:45'},
+            {'title': '7.自主就业退役士兵一次性退役金发放', 'status': '开始观看', 'raw': '7.自主就业退役士兵一次性退役金发放 所看时长: 00:10'},
+        ]
+        snapshot = main.PlayerSnapshot(
+            exists=True,
+            duration=230.0,
+            current_time=1.5,
+            paused=False,
+            title='2.退役士兵安置地规定',
+        )
+
+        self.assertFalse(
+            main.should_skip_by_watched_duration(
+                snapshot,
+                rows,
+                target_title='7.自主就业退役士兵一次性退役金发放',
+                tolerance_seconds=5.0,
+            )
+        )
+
     def test_wait_for_collection_targets_scrolls_until_count_stabilizes(self):
         page = object()
         target_rounds = iter([

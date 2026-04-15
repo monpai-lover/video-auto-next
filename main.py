@@ -423,12 +423,36 @@ def extract_watched_duration_seconds(row: dict[str, str]) -> float | None:
     return parse_duration_text_to_seconds(match.group(1))
 
 
-def should_skip_by_watched_duration(snapshot: PlayerSnapshot, rows: list[dict[str, str]], *, tolerance_seconds: float = WATCHED_DURATION_TOLERANCE_SECONDS) -> bool:
-    if not snapshot.exists or snapshot.duration <= 0 or not snapshot.title:
+def resolve_active_video_title(
+    snapshot: PlayerSnapshot,
+    *,
+    pending_title: str | None,
+    pending_started_at: float,
+    now: float,
+    switch_window_seconds: float = 8.0,
+    early_playback_seconds: float = 5.0,
+) -> str:
+    if (
+        pending_title
+        and now - pending_started_at <= switch_window_seconds
+        and snapshot.current_time <= early_playback_seconds
+    ):
+        return normalize_text(pending_title)
+    return normalize_text(snapshot.title or '')
+
+
+def should_skip_by_watched_duration(
+    snapshot: PlayerSnapshot,
+    rows: list[dict[str, str]],
+    *,
+    target_title: str | None = None,
+    tolerance_seconds: float = WATCHED_DURATION_TOLERANCE_SECONDS,
+) -> bool:
+    effective_title = normalize_text(target_title or snapshot.title or '')
+    if not snapshot.exists or snapshot.duration <= 0 or not effective_title:
         return False
-    target_title = normalize_text(snapshot.title)
     for row in rows:
-        if normalize_text(row.get('title', '')) != target_title:
+        if normalize_text(row.get('title', '')) != effective_title:
             continue
         watched_seconds = extract_watched_duration_seconds(row)
         if watched_seconds is None:
@@ -745,36 +769,48 @@ def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None
         rows = collect_rows(page)
 
         if snapshot.exists:
-            if pending_title and normalize_text(snapshot.title) == normalize_text(pending_title):
+            current_time = time.monotonic()
+            active_title = resolve_active_video_title(
+                snapshot,
+                pending_title=pending_title,
+                pending_started_at=pending_started_at,
+                now=current_time,
+            )
+
+            if pending_title and active_title == normalize_text(pending_title):
+                if normalize_text(snapshot.title) == normalize_text(pending_title) or snapshot.current_time > 5:
+                    pending_title = None
+                    pending_started_at = 0.0
+            elif pending_title and normalize_text(snapshot.title) == normalize_text(pending_title):
                 pending_title = None
                 pending_started_at = 0.0
 
             if snapshot.key != last_key:
                 last_key = snapshot.key
-                started_at = time.monotonic()
-                print(f'[info] 当前视频: {snapshot.title or "<unknown>"}')
-                if should_skip_by_watched_duration(snapshot, rows):
+                started_at = current_time
+                print(f'[info] 当前视频: {active_title or "<unknown>"}')
+                if should_skip_by_watched_duration(snapshot, rows, target_title=active_title):
                     print('[info] 当前视频所看时长已接近总时长，直接跳过到下一节')
                     clicked_title = click_next_video(page, require_current=True)
                     if clicked_title:
                         pending_title = clicked_title if clicked_title not in NEXT_TEXT_TOKENS else None
-                        pending_started_at = time.monotonic() if pending_title else 0.0
+                        pending_started_at = current_time if pending_title else 0.0
                         time.sleep(3)
                         continue
                     print('[info] 当前集合内已无下一节可播放视频，视为集合完成')
                     return
                 ensure_video_started(page, preferred_title=pending_title)
 
-            watch_elapsed = time.monotonic() - started_at
+            watch_elapsed = current_time - started_at
             print(
                 f'[state] current={snapshot.current_time:.1f}s duration={snapshot.duration:.1f}s '
                 f'display={snapshot.current_display}/{snapshot.duration_display} '
                 f'videojs={snapshot.has_videojs} class={snapshot.player_class}'
             )
 
-            if is_false_end_jump(snapshot.duration, snapshot.current_time, watch_elapsed) and time.monotonic() - last_fix_at > 3:
+            if is_false_end_jump(snapshot.duration, snapshot.current_time, watch_elapsed) and current_time - last_fix_at > 3:
                 if restore_from_false_end_jump(page, safe_seek, has_videojs=snapshot.has_videojs):
-                    last_fix_at = time.monotonic()
+                    last_fix_at = current_time
                     time.sleep(1.5)
                     continue
 
@@ -782,8 +818,8 @@ def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None
                 clicked_title = click_next_video(page, require_current=True)
                 if clicked_title:
                     pending_title = clicked_title if clicked_title not in NEXT_TEXT_TOKENS else None
-                    pending_started_at = time.monotonic() if pending_title else 0.0
-                    started_at = time.monotonic()
+                    pending_started_at = current_time if pending_title else 0.0
+                    started_at = current_time
                     time.sleep(3)
                     continue
                 print('[info] 当前集合内已无下一节可播放视频，视为集合完成')

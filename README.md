@@ -87,11 +87,31 @@ https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/onlineTrainList
 - Playwright
 - Chromium
 
-安装示例：
+## 依赖安装
+
+### 方式一：直接安装
 
 ```bash
+python3 -m pip install --upgrade pip
 python3 -m pip install playwright
 python3 -m playwright install chromium
+```
+
+### 方式二：使用虚拟环境（推荐）
+
+```bash
+cd /Users/goatdie/video-auto-next
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install playwright
+python3 -m playwright install chromium
+```
+
+安装完成后，可以先验证 Playwright 是否可用：
+
+```bash
+python3 -c "import playwright; print('playwright ok')"
 ```
 
 ## 运行方式
