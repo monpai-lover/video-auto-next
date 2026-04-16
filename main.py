@@ -47,6 +47,7 @@ ONLINE_TRAIN_PARENT_URL = 'https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/onlin
 STUDY_TIME_URL = 'https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/studyTime'
 STUDY_TIME_OVERLAY_ID = 'video-auto-next-study-time-overlay'
 STUDY_TIME_REFRESH_SECONDS = 30.0
+STUDY_TIME_FULL_RELOAD_SECONDS = 1800.0
 
 
 @dataclass
@@ -72,6 +73,7 @@ class PlayerSnapshot:
 class StudyTimeOverlayState:
     current_value: str | None = None
     last_refresh_at: float = 0.0
+    last_full_reload_at: float = 0.0
     aux_page: Any | None = None
 
 
@@ -318,7 +320,21 @@ def refresh_study_time_overlay(
         return
 
     aux_page = ensure_study_time_page(context, state)
-    open_url(aux_page, STUDY_TIME_URL)
+    should_full_reload = (
+        state.last_full_reload_at > 0
+        and now - state.last_full_reload_at >= STUDY_TIME_FULL_RELOAD_SECONDS
+    )
+    if should_full_reload:
+        try:
+            aux_page.reload(wait_until='domcontentloaded', timeout=60_000)
+            print('[info] 已强制刷新学习时长页面')
+        except Exception:
+            open_url(aux_page, STUDY_TIME_URL)
+        state.last_full_reload_at = now
+    else:
+        open_url(aux_page, STUDY_TIME_URL)
+        if state.last_full_reload_at <= 0:
+            state.last_full_reload_at = now
     wait_for_study_time_route_ready(aux_page)
     try:
         aux_page.wait_for_load_state('networkidle', timeout=5_000)

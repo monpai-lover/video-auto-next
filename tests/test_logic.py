@@ -78,6 +78,55 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(opened, [main.STUDY_TIME_URL])
         self.assertEqual(rendered[-1], (main_page, '02:33'))
 
+    def test_refresh_study_time_overlay_reloads_background_page_after_half_hour(self):
+        class DummyPage:
+            def __init__(self):
+                self.closed = False
+                self.reload_calls = []
+
+            def is_closed(self):
+                return self.closed
+
+            def bring_to_front(self):
+                return None
+
+            def reload(self, wait_until=None, timeout=None):
+                self.reload_calls.append((wait_until, timeout))
+
+            def wait_for_load_state(self, state=None, timeout=None):
+                return None
+
+        class DummyContext:
+            def __init__(self, page):
+                self.page = page
+
+            def new_page(self):
+                return self.page
+
+        aux_page = DummyPage()
+        context = DummyContext(aux_page)
+        main_page = DummyPage()
+        rendered = []
+        opened = []
+
+        with patch.object(main, 'ensure_study_time_overlay', lambda page, value: rendered.append((page, value))), \
+             patch.object(main, 'open_url', lambda page, url: opened.append(url)), \
+             patch.object(main, 'wait_for_study_time_route_ready', lambda page: True), \
+             patch.object(main, 'read_study_time_display', lambda page: '24.28小时'), \
+             patch.object(main.time, 'monotonic', side_effect=[2800.0, 2800.0]):
+            state = main.StudyTimeOverlayState(
+                current_value='24.00小时',
+                last_refresh_at=1000.0,
+                last_full_reload_at=900.0,
+                aux_page=aux_page,
+            )
+            main.refresh_study_time_overlay(context, main_page, state, force=True)
+
+        self.assertEqual(aux_page.reload_calls, [('domcontentloaded', 60_000)])
+        self.assertEqual(opened, [])
+        self.assertEqual(state.current_value, '24.28小时')
+        self.assertEqual(state.last_full_reload_at, 2800.0)
+
     def test_refresh_study_time_overlay_skips_fetch_before_interval(self):
         class DummyPage:
             def is_closed(self):
