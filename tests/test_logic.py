@@ -30,6 +30,10 @@ class LogicTests(unittest.TestCase):
         text = '累计学习时长：1小时2分3秒'
         self.assertEqual(extract_study_time_display(text), '01:02:03')
 
+    def test_extract_study_time_display_supports_xueshi_label(self):
+        text = '已学时长 02:33'
+        self.assertEqual(extract_study_time_display(text), '02:33')
+
     def test_build_study_time_overlay_text_defaults_to_loading(self):
         self.assertEqual(build_study_time_overlay_text(None), '累计学习时长：读取中...')
 
@@ -88,6 +92,17 @@ class LogicTests(unittest.TestCase):
             main.refresh_study_time_overlay(context, main_page, state, force=False, interval_seconds=30.0)
 
         self.assertEqual(rendered[-1], (main_page, '02:33'))
+
+    def test_read_study_time_display_retries_until_text_appears(self):
+        samples = iter(['', '学习累计时长：02:33'])
+        sleep_calls = []
+
+        with patch.object(main, 'safe_page_evaluate', lambda *args, **kwargs: next(samples)), \
+             patch.object(main.time, 'sleep', lambda seconds: sleep_calls.append(seconds)):
+            value = main.read_study_time_display(object(), attempts=2, wait_seconds=0.2)
+
+        self.assertEqual(value, '02:33')
+        self.assertEqual(sleep_calls, [0.2])
 
     def test_resolve_stable_active_video_title_keeps_previous_title_when_dom_drifts(self):
         snapshot = main.PlayerSnapshot(

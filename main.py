@@ -222,14 +222,30 @@ def ensure_study_time_overlay(page, value: str | None) -> None:
     )
 
 
-def read_study_time_display(page) -> str | None:
-    raw_text = safe_page_evaluate(
-        page,
-        "() => document.body?.innerText || ''",
-        default='',
-        label='read_study_time_display',
-    )
-    return extract_study_time_display(raw_text or '')
+def read_study_time_display(page, *, attempts: int = 8, wait_seconds: float = 0.5) -> str | None:
+    for index in range(max(1, attempts)):
+        raw_text = safe_page_evaluate(
+            page,
+            """
+            () => {
+              const parts = [];
+              if (document.body?.innerText) parts.push(document.body.innerText);
+              for (const node of document.querySelectorAll('input, textarea, [value]')) {
+                const value = node.value || node.getAttribute('value') || '';
+                if (value) parts.push(value);
+              }
+              return parts.join('\\n');
+            }
+            """,
+            default='',
+            label='read_study_time_display',
+        )
+        display = extract_study_time_display(raw_text or '')
+        if display:
+            return display
+        if index + 1 < max(1, attempts):
+            time.sleep(wait_seconds)
+    return None
 
 
 def ensure_study_time_page(context, state: StudyTimeOverlayState):

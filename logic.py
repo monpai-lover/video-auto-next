@@ -144,14 +144,14 @@ def extract_study_time_display(text: str) -> Optional[str]:
         return None
 
     clock_match = re.search(
-        r'(?:学习累计时长|累计学习时长|累计时长|学习时长)[：:]?(\d{1,2}:\d{2}(?::\d{2})?)',
+        r'(?:学习累计时长|累计学习时长|累计时长|学习时长|累计学时|已学时长|已学时长|总学时)[：:]?(\d{1,2}:\d{2}(?::\d{2})?)',
         compact,
     )
     if clock_match:
         return clock_match.group(1)
 
     chinese_match = re.search(
-        r'(?:学习累计时长|累计学习时长|累计时长|学习时长)[：:]?'
+        r'(?:学习累计时长|累计学习时长|累计时长|学习时长|累计学时|已学时长|总学时)[：:]?'
         r'(?:(\d+)小时)?(?:(\d+)分)?(?:(\d+)秒)?',
         compact,
     )
