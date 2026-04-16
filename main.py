@@ -259,6 +259,51 @@ def ensure_study_time_page(context, state: StudyTimeOverlayState):
     return state.aux_page
 
 
+def wait_for_study_time_route_ready(page, *, attempts: int = 20, wait_seconds: float = 0.3) -> bool:
+    for index in range(max(1, attempts)):
+        current_url = safe_page_evaluate(
+            page,
+            "() => window.location.href || ''",
+            default='',
+            label='wait_for_study_time_route_ready',
+        )
+        if '#/studyTime' in (current_url or ''):
+            return True
+        if index + 1 < max(1, attempts):
+            time.sleep(wait_seconds)
+    return False
+
+
+def get_study_time_debug_snapshot(page) -> dict[str, str]:
+    data = safe_page_evaluate(
+        page,
+        """
+        () => {
+          const parts = [];
+          if (document.body?.innerText) parts.push(document.body.innerText);
+          for (const node of document.querySelectorAll('input, textarea, [value]')) {
+            const value = node.value || node.getAttribute('value') || '';
+            if (value) parts.push(value);
+          }
+          return {
+            url: window.location.href || '',
+            title: document.title || '',
+            readyState: document.readyState || '',
+            text: parts.join('\\n').slice(0, 1200),
+          };
+        }
+        """,
+        default={},
+        label='get_study_time_debug_snapshot',
+    ) or {}
+    return {
+        'url': str(data.get('url') or ''),
+        'title': str(data.get('title') or ''),
+        'readyState': str(data.get('readyState') or ''),
+        'text': str(data.get('text') or ''),
+    }
+
+
 def refresh_study_time_overlay(
     context,
     page,
@@ -274,11 +319,25 @@ def refresh_study_time_overlay(
 
     aux_page = ensure_study_time_page(context, state)
     open_url(aux_page, STUDY_TIME_URL)
+    wait_for_study_time_route_ready(aux_page)
+    try:
+        aux_page.wait_for_load_state('networkidle', timeout=5_000)
+    except Exception:
+        pass
     latest_value = read_study_time_display(aux_page)
     if latest_value:
         if latest_value != state.current_value:
             print(f'[info] 学习累计时长更新: {latest_value}')
         state.current_value = latest_value
+    else:
+        probe = get_study_time_debug_snapshot(aux_page)
+        print(
+            '[warn] 学习累计时长读取失败 '
+            f'url={probe["url"] or "<empty>"} '
+            f'title={probe["title"] or "<empty>"} '
+            f'ready={probe["readyState"] or "<empty>"} '
+            f'text={probe["text"][:300] or "<empty>"}'
+        )
     state.last_refresh_at = now
     ensure_study_time_overlay(page, state.current_value)
     try:

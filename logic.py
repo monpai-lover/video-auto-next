@@ -161,6 +161,13 @@ def extract_study_time_display(text: str) -> Optional[str]:
         seconds = int(chinese_match.group(3) or 0)
         return format_seconds_as_clock(hours * 3600 + minutes * 60 + seconds)
 
+    decimal_hours_match = re.search(
+        r'(?:当前累计学时|累计学时|总学时|学习时长信息.*?当前累计学时).*?(?:单位[:：]?小时)?.*?(\d+(?:\.\d+)?)',
+        compact,
+    )
+    if decimal_hours_match:
+        return f'{decimal_hours_match.group(1)}小时'
+
     return None
 
 

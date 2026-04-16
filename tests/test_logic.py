@@ -34,6 +34,10 @@ class LogicTests(unittest.TestCase):
         text = '已学时长 02:33'
         self.assertEqual(extract_study_time_display(text), '02:33')
 
+    def test_extract_study_time_display_supports_decimal_hours_value(self):
+        text = '学习时长信息\n当前累计学时\n单位:小时\n24.28'
+        self.assertEqual(extract_study_time_display(text), '24.28小时')
+
     def test_build_study_time_overlay_text_defaults_to_loading(self):
         self.assertEqual(build_study_time_overlay_text(None), '累计学习时长：读取中...')
 
@@ -64,6 +68,7 @@ class LogicTests(unittest.TestCase):
 
         with patch.object(main, 'ensure_study_time_overlay', lambda page, value: rendered.append((page, value))), \
              patch.object(main, 'open_url', lambda page, url: opened.append(url)), \
+             patch.object(main, 'wait_for_study_time_route_ready', lambda page: True), \
              patch.object(main, 'read_study_time_display', lambda page: '02:33'), \
              patch.object(main.time, 'monotonic', side_effect=[100.0, 100.0]):
             state = main.StudyTimeOverlayState()
@@ -103,6 +108,36 @@ class LogicTests(unittest.TestCase):
 
         self.assertEqual(value, '02:33')
         self.assertEqual(sleep_calls, [0.2])
+
+    def test_wait_for_study_time_route_ready_retries_until_hash_matches(self):
+        urls = iter([
+            'https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/onlineTrainList',
+            'https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/studyTime',
+        ])
+        sleep_calls = []
+
+        with patch.object(main, 'safe_page_evaluate', lambda *args, **kwargs: next(urls)), \
+             patch.object(main.time, 'sleep', lambda seconds: sleep_calls.append(seconds)):
+            ready = main.wait_for_study_time_route_ready(object(), attempts=2, wait_seconds=0.2)
+
+        self.assertTrue(ready)
+        self.assertEqual(sleep_calls, [0.2])
+
+    def test_get_study_time_debug_snapshot_collects_page_probe(self):
+        payload = {
+            'url': 'https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/studyTime',
+            'title': '学习时长',
+            'readyState': 'complete',
+            'text': '累计学习时长 02:33 其余文本',
+        }
+
+        with patch.object(main, 'safe_page_evaluate', lambda *args, **kwargs: payload):
+            probe = main.get_study_time_debug_snapshot(object())
+
+        self.assertEqual(probe['url'], payload['url'])
+        self.assertEqual(probe['title'], payload['title'])
+        self.assertEqual(probe['readyState'], payload['readyState'])
+        self.assertIn('02:33', probe['text'])
 
     def test_resolve_stable_active_video_title_keeps_previous_title_when_dom_drifts(self):
         snapshot = main.PlayerSnapshot(
