@@ -4,8 +4,10 @@ from unittest.mock import patch
 import main
 from logic import (
     build_storage_restore_script,
+    build_study_time_overlay_text,
     choose_next_item_after_current,
     choose_next_item_label,
+    extract_study_time_display,
     filter_playable_collections,
     get_auth_state_path,
     get_autoplay_strategy_order,
@@ -20,6 +22,73 @@ from logic import (
 
 
 class LogicTests(unittest.TestCase):
+    def test_extract_study_time_display_reads_labeled_clock_text(self):
+        text = '学习累计时长：02:33'
+        self.assertEqual(extract_study_time_display(text), '02:33')
+
+    def test_extract_study_time_display_supports_chinese_duration(self):
+        text = '累计学习时长：1小时2分3秒'
+        self.assertEqual(extract_study_time_display(text), '01:02:03')
+
+    def test_build_study_time_overlay_text_defaults_to_loading(self):
+        self.assertEqual(build_study_time_overlay_text(None), '累计学习时长：读取中...')
+
+    def test_refresh_study_time_overlay_updates_from_background_page(self):
+        class DummyPage:
+            def __init__(self):
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def bring_to_front(self):
+                return None
+
+        class DummyContext:
+            def __init__(self):
+                self.created = []
+
+            def new_page(self):
+                page = DummyPage()
+                self.created.append(page)
+                return page
+
+        context = DummyContext()
+        main_page = DummyPage()
+        rendered = []
+        opened = []
+
+        with patch.object(main, 'ensure_study_time_overlay', lambda page, value: rendered.append((page, value))), \
+             patch.object(main, 'open_url', lambda page, url: opened.append(url)), \
+             patch.object(main, 'read_study_time_display', lambda page: '02:33'), \
+             patch.object(main.time, 'monotonic', side_effect=[100.0, 100.0]):
+            state = main.StudyTimeOverlayState()
+            main.refresh_study_time_overlay(context, main_page, state, force=True)
+
+        self.assertEqual(state.current_value, '02:33')
+        self.assertEqual(opened, [main.STUDY_TIME_URL])
+        self.assertEqual(rendered[-1], (main_page, '02:33'))
+
+    def test_refresh_study_time_overlay_skips_fetch_before_interval(self):
+        class DummyPage:
+            def is_closed(self):
+                return False
+
+            def bring_to_front(self):
+                return None
+
+        context = object()
+        main_page = DummyPage()
+        rendered = []
+
+        with patch.object(main, 'ensure_study_time_overlay', lambda page, value: rendered.append((page, value))), \
+             patch.object(main, 'open_url', lambda page, url: (_ for _ in ()).throw(AssertionError('should not refresh'))), \
+             patch.object(main.time, 'monotonic', return_value=110.0):
+            state = main.StudyTimeOverlayState(current_value='02:33', last_refresh_at=100.0, aux_page=DummyPage())
+            main.refresh_study_time_overlay(context, main_page, state, force=False, interval_seconds=30.0)
+
+        self.assertEqual(rendered[-1], (main_page, '02:33'))
+
     def test_resolve_stable_active_video_title_keeps_previous_title_when_dom_drifts(self):
         snapshot = main.PlayerSnapshot(
             exists=True,
@@ -298,7 +367,7 @@ class LogicTests(unittest.TestCase):
 
         with patch.object(main, 'wait_for_collection_targets', lambda current_page: next(target_rounds, [])), \
              patch.object(main, 'open_url', lambda current_page, url: opened_urls.append(url)), \
-             patch.object(main, 'play_detail_collection', lambda current_page, safe_seek, poll_interval: played_titles.append(opened_urls[-1])):
+             patch.object(main, 'play_detail_collection', lambda current_page, safe_seek, poll_interval, **kwargs: played_titles.append(opened_urls[-1])):
             main.dispatch_collections(page, safe_seek=2.0, poll_interval=1.0, parent_url='https://example.com/#/onlineTrain')
 
         self.assertEqual(

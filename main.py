@@ -7,12 +7,15 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from logic import (
     build_storage_restore_script,
+    build_study_time_overlay_text,
     choose_next_item_after_current,
     choose_next_item_label,
+    extract_study_time_display,
     filter_playable_collections,
     get_autoplay_strategy_order,
     get_auth_state_path,
@@ -41,6 +44,9 @@ NEXT_TEXT_TOKENS = ('开始观看', '下一节', '下一集', '继续学习', '�
 CLOSE_TEXT_TOKENS = ('关闭', '知道了', '我知道了', '稍后', '取消', '确定', '确认')
 WATCHED_DURATION_TOLERANCE_SECONDS = 5.0
 ONLINE_TRAIN_PARENT_URL = 'https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/onlineTrainList'
+STUDY_TIME_URL = 'https://peixun.tyjr.sh.gov.cn/azqPhoneService/#/studyTime'
+STUDY_TIME_OVERLAY_ID = 'video-auto-next-study-time-overlay'
+STUDY_TIME_REFRESH_SECONDS = 30.0
 
 
 @dataclass
@@ -60,6 +66,13 @@ class PlayerSnapshot:
     @property
     def key(self) -> str:
         return self.src or self.title or 'unknown'
+
+
+@dataclass
+class StudyTimeOverlayState:
+    current_value: str | None = None
+    last_refresh_at: float = 0.0
+    aux_page: Any | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -170,6 +183,92 @@ def safe_page_evaluate(page, expression: str, arg=None, *, default=None, label: 
             print(f"[warn] {label} 遇到页面导航，跳过本次 evaluate")
             return default
         raise
+
+
+def ensure_study_time_overlay(page, value: str | None) -> None:
+    safe_page_evaluate(
+        page,
+        """
+        (payload) => {
+          const { id, text } = payload;
+          let node = document.getElementById(id);
+          if (!node) {
+            node = document.createElement('div');
+            node.id = id;
+            Object.assign(node.style, {
+              position: 'fixed',
+              top: '8px',
+              left: '8px',
+              zIndex: '2147483647',
+              background: 'rgba(0, 0, 0, 0.78)',
+              color: '#fff',
+              padding: '6px 10px',
+              borderRadius: '8px',
+              fontSize: '14px',
+              lineHeight: '20px',
+              fontFamily: '-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+              pointerEvents: 'none',
+              whiteSpace: 'nowrap'
+            });
+            document.documentElement.appendChild(node);
+          }
+          node.textContent = text;
+        }
+        """,
+        {'id': STUDY_TIME_OVERLAY_ID, 'text': build_study_time_overlay_text(value)},
+        default=None,
+        label='ensure_study_time_overlay',
+    )
+
+
+def read_study_time_display(page) -> str | None:
+    raw_text = safe_page_evaluate(
+        page,
+        "() => document.body?.innerText || ''",
+        default='',
+        label='read_study_time_display',
+    )
+    return extract_study_time_display(raw_text or '')
+
+
+def ensure_study_time_page(context, state: StudyTimeOverlayState):
+    page = state.aux_page
+    try:
+        if page is not None and not page.is_closed():
+            return page
+    except Exception:
+        pass
+    state.aux_page = context.new_page()
+    return state.aux_page
+
+
+def refresh_study_time_overlay(
+    context,
+    page,
+    state: StudyTimeOverlayState,
+    *,
+    force: bool = False,
+    interval_seconds: float = STUDY_TIME_REFRESH_SECONDS,
+) -> None:
+    ensure_study_time_overlay(page, state.current_value)
+    now = time.monotonic()
+    if not force and now - state.last_refresh_at < interval_seconds:
+        return
+
+    aux_page = ensure_study_time_page(context, state)
+    open_url(aux_page, STUDY_TIME_URL)
+    latest_value = read_study_time_display(aux_page)
+    if latest_value:
+        if latest_value != state.current_value:
+            print(f'[info] 学习累计时长更新: {latest_value}')
+        state.current_value = latest_value
+    state.last_refresh_at = now
+    ensure_study_time_overlay(page, state.current_value)
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
 
 
 def has_response_code_failure(message: str) -> bool:
@@ -785,15 +884,19 @@ def collection_is_completed(page) -> bool:
     return all('开始观看' not in normalize_text(row.get('status', '')) and '正在播放' not in normalize_text(row.get('status', '')) for row in rows)
 
 
-def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None:
+def play_detail_collection(page, safe_seek: float, poll_interval: float, *, context=None, study_time_state: StudyTimeOverlayState | None = None) -> None:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         dismiss_popups(page)
+        if context and study_time_state:
+            refresh_study_time_overlay(context, page, study_time_state)
         ensure_video_tab(page)
         if is_detail_page(page):
             break
         time.sleep(0.5)
 
+    if context and study_time_state:
+        refresh_study_time_overlay(context, page, study_time_state, force=True)
     ensure_video_tab(page)
     pending_title = None
     pending_started_at = 0.0
@@ -808,6 +911,8 @@ def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None
 
     while True:
         dismiss_popups(page)
+        if context and study_time_state:
+            refresh_study_time_overlay(context, page, study_time_state)
         snapshot = snapshot_player(page)
         rows = collect_rows(page)
 
@@ -903,10 +1008,12 @@ def play_detail_collection(page, safe_seek: float, poll_interval: float) -> None
         time.sleep(poll_interval)
 
 
-def dispatch_collections(page, safe_seek: float, poll_interval: float, parent_url: str) -> None:
+def dispatch_collections(page, safe_seek: float, poll_interval: float, parent_url: str, *, context=None, study_time_state: StudyTimeOverlayState | None = None) -> None:
     visited_hrefs: set[str] = set()
 
     while True:
+        if context and study_time_state:
+            refresh_study_time_overlay(context, page, study_time_state)
         targets = [target for target in wait_for_collection_targets(page) if target.get('href') not in visited_hrefs]
         if not targets:
             print('[warn] 父页面未找到可播放集合')
@@ -916,9 +1023,13 @@ def dispatch_collections(page, safe_seek: float, poll_interval: float, parent_ur
         visited_hrefs.add(target.get('href', ''))
         print(f"[info] 进入集合 {len(visited_hrefs)}/{len(visited_hrefs) + len(targets) - 1}: {target['title']} -> {target['url']}")
         open_url(page, target['url'])
-        play_detail_collection(page, safe_seek=safe_seek, poll_interval=poll_interval)
+        if context and study_time_state:
+            refresh_study_time_overlay(context, page, study_time_state, force=True)
+        play_detail_collection(page, safe_seek=safe_seek, poll_interval=poll_interval, context=context, study_time_state=study_time_state)
         print(f"[info] 集合播放结束: {target['title']}")
         open_url(page, parent_url)
+        if context and study_time_state:
+            refresh_study_time_overlay(context, page, study_time_state, force=True)
 
 
 def main() -> int:
@@ -939,23 +1050,27 @@ def main() -> int:
         except PlaywrightTimeoutError:
             print('[warn] 页面加载超时，继续尝试在当前页面工作')
 
+        study_time_state = StudyTimeOverlayState()
         print('[info] 页面已打开。')
+        refresh_study_time_overlay(context, page, study_time_state, force=True)
         if args.login_wait:
             wait_for_manual_ready(True)
             save_auth_state(context, page, profile_dir)
+            refresh_study_time_overlay(context, page, study_time_state, force=True)
 
         try:
             dismiss_popups(page)
             parent_url = resolve_parent_url(args.url)
             if is_parent_page(page):
                 print('[info] 检测到父页面，开始按最后一个到第一个集合顺序播放')
-                dispatch_collections(page, safe_seek=args.safe_seek, poll_interval=args.poll_interval, parent_url=parent_url)
+                dispatch_collections(page, safe_seek=args.safe_seek, poll_interval=args.poll_interval, parent_url=parent_url, context=context, study_time_state=study_time_state)
             else:
                 print('[info] 检测到详情页，开始播放当前集合')
-                play_detail_collection(page, safe_seek=args.safe_seek, poll_interval=args.poll_interval)
+                play_detail_collection(page, safe_seek=args.safe_seek, poll_interval=args.poll_interval, context=context, study_time_state=study_time_state)
                 print('[info] 当前集合完成，返回选择页继续调度')
                 open_url(page, parent_url)
-                dispatch_collections(page, safe_seek=args.safe_seek, poll_interval=args.poll_interval, parent_url=parent_url)
+                refresh_study_time_overlay(context, page, study_time_state, force=True)
+                dispatch_collections(page, safe_seek=args.safe_seek, poll_interval=args.poll_interval, parent_url=parent_url, context=context, study_time_state=study_time_state)
         except KeyboardInterrupt:
             print('\n[info] 用户中断，正在退出...')
         finally:

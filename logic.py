@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
 
@@ -127,3 +128,41 @@ def build_storage_restore_script(storage_entries: list[dict]) -> str:
       }}
     }})();
     """
+
+
+def format_seconds_as_clock(total_seconds: int) -> str:
+    hours, remainder = divmod(max(0, total_seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+    return f'{minutes:02d}:{seconds:02d}'
+
+
+def extract_study_time_display(text: str) -> Optional[str]:
+    compact = re.sub(r'\s+', '', text or '')
+    if not compact:
+        return None
+
+    clock_match = re.search(
+        r'(?:学习累计时长|累计学习时长|累计时长|学习时长)[：:]?(\d{1,2}:\d{2}(?::\d{2})?)',
+        compact,
+    )
+    if clock_match:
+        return clock_match.group(1)
+
+    chinese_match = re.search(
+        r'(?:学习累计时长|累计学习时长|累计时长|学习时长)[：:]?'
+        r'(?:(\d+)小时)?(?:(\d+)分)?(?:(\d+)秒)?',
+        compact,
+    )
+    if chinese_match and any(part is not None for part in chinese_match.groups()):
+        hours = int(chinese_match.group(1) or 0)
+        minutes = int(chinese_match.group(2) or 0)
+        seconds = int(chinese_match.group(3) or 0)
+        return format_seconds_as_clock(hours * 3600 + minutes * 60 + seconds)
+
+    return None
+
+
+def build_study_time_overlay_text(value: Optional[str]) -> str:
+    return f'累计学习时长：{value or "读取中..."}'
